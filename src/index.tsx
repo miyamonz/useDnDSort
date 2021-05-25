@@ -3,14 +3,14 @@ import { render } from "react-dom";
 
 import { useDnDSort } from "./useDnDSort";
 
-type Style<T extends HTMLElement> = React.HTMLAttributes<T>["style"];
+type Style<T> = React.HTMLAttributes<T>["style"];
 
 const bodyStyle: Style<HTMLDivElement> = {
   height: "100vh",
   display: "flex",
   overflow: "hidden",
   alignItems: "center",
-  justifyContent: "center"
+  justifyContent: "center",
 };
 
 const containerStyle: Style<HTMLDivElement> = {
@@ -19,7 +19,7 @@ const containerStyle: Style<HTMLDivElement> = {
   justifyContent: "space-between",
   width: "100%",
   maxWidth: "350px",
-  maxHeight: "500px"
+  maxHeight: "500px",
 };
 
 const imageCardStyle: Style<HTMLDivElement> = {
@@ -29,14 +29,14 @@ const imageCardStyle: Style<HTMLDivElement> = {
   height: "130px",
   overflow: "hidden",
   borderRadius: "5px",
-  margin: 3
+  margin: 3,
 };
 
 const imageStyle: Style<HTMLImageElement> = {
   pointerEvents: "none",
   objectFit: "cover",
   width: "100%",
-  height: "100%"
+  height: "100%",
 };
 
 /**
@@ -51,7 +51,7 @@ const imageList: string[] = [
   "/images/pexels-steve-johnson-1690351.jpg",
   "/images/pexels-eberhard-grossgasteiger-2086361.jpg",
   "/images/pexels-eberhard-grossgasteiger-2088203.jpg",
-  "/images/pexels-alexander-ant-5603660.jpg"
+  "/images/pexels-alexander-ant-5603660.jpg",
 ];
 
 /**
@@ -65,6 +65,7 @@ const SortSampleApp = () => {
       <div style={containerStyle}>
         {results.map((item) => (
           <div key={item.key} style={imageCardStyle} {...item.events}>
+            {item.value}
             <img src={item.value} alt="ソート可能な画像" style={imageStyle} />
           </div>
         ))}
@@ -82,28 +83,4 @@ if (!rootElement) {
   document.body.appendChild(rootElement);
 }
 
-// 全ての画像を先読みする
-const prefetch = async () => {
-  const promisess = imageList.map((path) => {
-    return new Promise((resolve) => {
-      const image = new Image();
-
-      image.onload = resolve;
-
-      image.src = path;
-    });
-  });
-
-  await Promise.all(promisess);
-};
-
-// 画像が全てロードされたらコンポーネントを表示するようにする
-// 本来は要らないと思うが、codesandboxの画像のロードが遅いため使用する
-prefetch()
-  .then(() => {
-    // SortSampleAppコンポーネントを表示する
-    render(<SortSampleApp />, rootElement);
-  })
-  .catch(() => {
-    render(<p>エラーが発生しました</p>, rootElement);
-  });
+render(<SortSampleApp />, rootElement);
