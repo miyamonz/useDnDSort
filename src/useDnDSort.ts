@@ -1,5 +1,4 @@
-import React, { useRef, useState } from "react";
-import { atom } from "jotai";
+import React, { useRef, useState, useCallback, useEffect } from "react";
 import { isHover } from "./func";
 
 interface Position {
@@ -26,15 +25,10 @@ interface DnDRef<T> {
 function usePointerPosition() {
   const position = useRef<Position>({ x: 0, y: 0 }).current;
 
-  const setPosition = (p: Position | ((prev: Position) => Position)) => {
-    if (typeof p !== "function") {
-      position.x = p.x;
-      position.y = p.y;
-    } else {
-      const { x, y } = p(position);
-      position.x = x;
-      position.y = y;
-    }
+  const setPosition = (pos: Position | ((prev: Position) => Position)) => {
+    const p = typeof pos === "function" ? pos(position) : pos;
+    position.x = p.x;
+    position.y = p.y;
   };
 
   return [position, setPosition] as const;
@@ -117,26 +111,60 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
     }
   };
 
-  // ドラッグが終了した時の処理
-  const onMouseUp = (_event: MouseEvent) => {
-    const { dragElement } = state;
+  const [onStartDrag, setOnStartDrag] =
+    useRefFn<(e: StartDragEvent<T>) => void>();
+  const [onEndDrag, setOnEndDrag] = useRefFn<() => void>();
 
-    // ドラッグしていなかったら何もしない
-    if (!dragElement) return;
+  const run = async () => {
+    while (true) {
+      const { key, value, event, element } = await makePromise(setOnStartDrag);
 
-    // ドラッグしてる要素に適用していたCSSを削除
-    const dragStyle = dragElement.element.style;
-    dragStyle.zIndex = "";
-    dragStyle.cursor = "";
-    dragStyle.transform = "";
+      // マウスポインターの座標を保持しておく
+      setPointerPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
 
-    // ドラッグしている要素をstateから削除
-    state.dragElement = null;
+      // ドラッグしている要素のスタイルを上書き
+      element.style.transition = ""; // アニメーションを無効にする
+      element.style.cursor = "grabbing"; // カーソルのデザインを変更
 
-    // windowに登録していたイベントを削除
-    window.removeEventListener("mouseup", onMouseUp);
-    window.removeEventListener("mousemove", onMouseMove);
+      // 要素の座標を取得
+      const { left: x, top: y } = element.getBoundingClientRect();
+      const position = { x, y };
+
+      // ドラッグする要素を保持しておく
+      state.dragElement = { key, value, element, position };
+
+      // mousemove, mouseupイベントをwindowに登録する
+      window.addEventListener("mouseup", onEndDrag);
+      window.addEventListener("mousemove", onMouseMove);
+
+      await makePromise<void>(setOnEndDrag);
+      console.log("onmouseup");
+
+      const { dragElement } = state;
+
+      // ドラッグしていなかったら何もしない
+      if (!dragElement) return;
+
+      // ドラッグしてる要素に適用していたCSSを削除
+      const dragStyle = dragElement.element.style;
+      dragStyle.zIndex = "";
+      dragStyle.cursor = "";
+      dragStyle.transform = "";
+
+      // ドラッグしている要素をstateから削除
+      state.dragElement = null;
+
+      // windowに登録していたイベントを削除
+      window.removeEventListener("mouseup", onEndDrag);
+      window.removeEventListener("mousemove", onMouseMove);
+    }
   };
+  useEffect(() => {
+    run();
+  }, []);
 
   return items.map((value: T): DnDSortResult<T> => {
     // keyが無ければ新しく作り、あれば既存のkey文字列を返す
@@ -208,31 +236,30 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
         },
 
         onMouseDown: (event: React.MouseEvent<HTMLElement>) => {
-          // ドラッグする要素(DOM)
           const element = event.currentTarget;
-
-          // マウスポインターの座標を保持しておく
-          setPointerPosition({
-            x: event.clientX,
-            y: event.clientY,
-          });
-
-          // ドラッグしている要素のスタイルを上書き
-          element.style.transition = ""; // アニメーションを無効にする
-          element.style.cursor = "grabbing"; // カーソルのデザインを変更
-
-          // 要素の座標を取得
-          const { left: x, top: y } = element.getBoundingClientRect();
-          const position = { x, y };
-
-          // ドラッグする要素を保持しておく
-          state.dragElement = { key, value, element, position };
-
-          // mousemove, mouseupイベントをwindowに登録する
-          window.addEventListener("mouseup", onMouseUp);
-          window.addEventListener("mousemove", onMouseMove);
+          onStartDrag({ key, value, event, element });
         },
       },
     };
   });
+};
+
+function useRefFn<Fn extends CallableFunction>() {
+  const ref = useRef<Fn>();
+  const fn = useCallback((...args) => {
+    ref.current?.(...args);
+  }, []);
+  return [fn, (fn: Fn) => (ref.current = fn)] as const;
+}
+
+type Resolve<T> = (value: T) => void;
+function makePromise<T>(setRes: (resolve: Resolve<T>) => void): Promise<T> {
+  return new Promise((res) => setRes(res));
+}
+
+type StartDragEvent<T> = {
+  key: string;
+  value: T;
+  event: React.MouseEvent<HTMLElement>;
+  element: HTMLElement;
 };
