@@ -1,5 +1,6 @@
-import React, { useRef, useState, useCallback, useEffect } from "react";
+import React, { useRef, useState, useEffect, useMemo } from "react";
 import { isHover } from "./func";
+import { useRefFn } from "./useRefFn";
 
 interface Position {
   x: number;
@@ -16,7 +17,6 @@ interface DnDItem<T> {
 
 // useRef()で保持するデータの型
 interface DnDRef<T> {
-  keys: Map<T, string>; // 要素に紐づいたkey文字列を管理するMap
   dndItems: DnDItem<T>[]; // 並び替える全ての要素を保持するための配列
   canCheckHovered: boolean; // 重なり判定ができるかのフラグ
   dragElement: DnDItem<T> | null; // ドラッグしてる要素
@@ -44,17 +44,28 @@ interface DnDSortResult<T> {
   };
 }
 
+const getElementPosition = (element: HTMLElement): Position => {
+  const { left, top } = element.getBoundingClientRect();
+  return { x: left, y: top };
+};
+
 /**
  * @description ドラッグ＆ドロップの並び替え処理を提供します
  */
 export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
   // 描画内容と紐づいているのでuseStateで管理する
   const [items, setItems] = useState(defaultItems);
+  // userがkeyを指定すべき
+  const keyMap = useMemo(() => {
+    const keyMap = new Map(
+      items.map((item) => [item, Math.random().toString(16)])
+    );
+    return keyMap;
+  }, []);
 
   // 状態をrefで管理する
   const state = useRef<DnDRef<T>>({
     dndItems: [],
-    keys: new Map(),
     dragElement: null,
     canCheckHovered: true,
   }).current;
@@ -62,12 +73,9 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
   const [pointerPosition, setPointerPosition] = usePointerPosition();
 
   // ドラッグ中の処理
-  const onMouseMove = (event: MouseEvent) => {
+  const onMouseMove = (dragElement: DnDItem<T>) => (event: MouseEvent) => {
     const { clientX, clientY } = event;
-    const { dndItems, dragElement } = state;
-
-    // ドラッグして無ければ何もしない
-    if (!dragElement) return;
+    const { dndItems } = state;
 
     // マウスポインターの移動量を計算
     const x = clientX - pointerPosition.x;
@@ -101,12 +109,11 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
       dndItems.splice(dragIndex, 1);
       dndItems.splice(hoveredIndex, 0, dragElement);
 
-      const { left: x, top: y } = dragElement.element.getBoundingClientRect();
-
       // ドラッグ要素の座標を更新
-      dragElement.position = { x, y };
+      dragElement.position = getElementPosition(dragElement.element);
 
       // 再描画する
+      console.log("setItems");
       setItems(dndItems.map((v) => v.value));
     }
   };
@@ -118,6 +125,7 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
   const run = async () => {
     while (true) {
       const { key, value, event, element } = await makePromise(setOnStartDrag);
+      console.log("onmousedown");
 
       // マウスポインターの座標を保持しておく
       setPointerPosition({
@@ -130,23 +138,20 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
       element.style.cursor = "grabbing"; // カーソルのデザインを変更
 
       // 要素の座標を取得
-      const { left: x, top: y } = element.getBoundingClientRect();
-      const position = { x, y };
+      const position = getElementPosition(element);
 
       // ドラッグする要素を保持しておく
       state.dragElement = { key, value, element, position };
 
       // mousemove, mouseupイベントをwindowに登録する
       window.addEventListener("mouseup", onEndDrag);
-      window.addEventListener("mousemove", onMouseMove);
+      const _onMouseMove = onMouseMove(state.dragElement);
+      window.addEventListener("mousemove", _onMouseMove);
 
       await makePromise<void>(setOnEndDrag);
       console.log("onmouseup");
 
       const { dragElement } = state;
-
-      // ドラッグしていなかったら何もしない
-      if (!dragElement) return;
 
       // ドラッグしてる要素に適用していたCSSを削除
       const dragStyle = dragElement.element.style;
@@ -159,7 +164,7 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
 
       // windowに登録していたイベントを削除
       window.removeEventListener("mouseup", onEndDrag);
-      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mousemove", _onMouseMove);
     }
   };
   useEffect(() => {
@@ -167,17 +172,13 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
   }, []);
 
   return items.map((value: T): DnDSortResult<T> => {
-    // keyが無ければ新しく作り、あれば既存のkey文字列を返す
-    const key = state.keys.get(value) || Math.random().toString(16);
-
-    // 生成したkey文字列を保存
-    state.keys.set(value, key);
-
+    const key = keyMap.get(value) as string;
     return {
       value,
       key,
       events: {
         ref: (element: HTMLElement | null) => {
+          console.log("ref");
           if (!element) return;
 
           const { dndItems, dragElement } = state;
@@ -186,8 +187,7 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
           element.style.transform = "";
 
           // 要素の位置を取得
-          const { left: x, top: y } = element.getBoundingClientRect();
-          const position = { x, y };
+          const position = getElementPosition(element);
 
           const itemIndex = dndItems.findIndex((item) => item.key === key);
 
@@ -243,14 +243,6 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
     };
   });
 };
-
-function useRefFn<Fn extends CallableFunction>() {
-  const ref = useRef<Fn>();
-  const fn = useCallback((...args) => {
-    ref.current?.(...args);
-  }, []);
-  return [fn, (fn: Fn) => (ref.current = fn)] as const;
-}
 
 type Resolve<T> = (value: T) => void;
 function makePromise<T>(setRes: (resolve: Resolve<T>) => void): Promise<T> {
