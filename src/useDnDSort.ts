@@ -60,25 +60,36 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
     return keyMap;
   }, []);
 
-  // これはonMouseMoveの際に使われてて、入れ替え時にだけなんかいじるので、pointerPositionという名前は正しくない
-  // 掴んだときの初期位置だ
-  // ドラッグ中の要素のtransformを得るために使っている
+  const dndItems = useRef<DnDItem<T>[]>([]).current;
 
-  const [onStartDrag, getStartDragPromise] =
+  const [resolveMouseDown, getMouseDownPromise] =
     usePromise<[DnDItem<T>, React.MouseEvent<HTMLElement>]>();
-  const [onEndDrag, getEndDragPromise] = usePromise<void>();
+  const [resolveMouseUp, getMouseUpPromise] = usePromise<void>();
+
+  async function onDragPromise(onMouseMove: (e: MouseEvent) => void) {
+    window.addEventListener("mouseup", resolveMouseUp);
+    window.addEventListener("mousemove", onMouseMove);
+    await getMouseUpPromise();
+    window.removeEventListener("mouseup", resolveMouseUp);
+    window.removeEventListener("mousemove", onMouseMove);
+  }
 
   const run = async () => {
     while (true) {
-      const [dragItem, { clientX, clientY }] = await getStartDragPromise();
+      const [dragItem, { clientX, clientY }] = await getMouseDownPromise();
       console.log("onmousedown");
 
       // マウスポインターの座標を保持しておく
       let downPos = { x: clientX, y: clientY };
 
+      const { cursor, transform, zIndex } = dragItem.element.style;
+      const prevStyle = { cursor, transform, zIndex };
+
       // ドラッグしている要素のスタイルを上書き
-      dragItem.element.style.transition = ""; // アニメーションを無効にする
-      dragItem.element.style.cursor = "grabbing"; // カーソルのデザインを変更
+      Object.assign(dragItem.element.style, {
+        transition: "",
+        cursor: "grabbing",
+      });
 
       // ドラッグ中の処理
       const onMouseMove = (event: MouseEvent) => {
@@ -108,15 +119,12 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
             position: getElementPosition(dragItem.element),
             mousePos,
           };
-
           // get previous position
           dndItems.forEach((item) => {
             item.position = getElementPosition(item.element);
           });
           // 再描画する
-          console.log("setItems");
           setItems(dndItems.map((v) => v.value));
-          console.log("after setItems");
 
           // ここで再配置後の処理を行う
           const newItems = dndItems.map((item) => {
@@ -138,20 +146,11 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
         }
       };
 
-      window.addEventListener("mouseup", onEndDrag);
-      window.addEventListener("mousemove", onMouseMove);
-
-      await getEndDragPromise();
+      await onDragPromise(onMouseMove);
       console.log("onmouseup");
 
       // ドラッグしてる要素に適用していたCSSを削除
-      const dragStyle = dragItem.element.style;
-      dragStyle.zIndex = "";
-      dragStyle.cursor = "";
-      dragStyle.transform = "";
-
-      window.removeEventListener("mouseup", onEndDrag);
-      window.removeEventListener("mousemove", onMouseMove);
+      Object.assign(dragItem.element.style, { ...prevStyle });
     }
   };
   useEffect(() => {
@@ -159,8 +158,6 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
       console.log("stopped");
     });
   }, []);
-
-  const dndItems = useRef<DnDItem<T>[]>([]).current;
 
   return items.map((value: T): DnDSortResult<T> => {
     const key = keyMap.get(value) as string;
@@ -172,8 +169,6 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
           if (!element) return;
 
           const exists = dndItems.find((item) => item.key === key);
-
-          // 要素が無ければ新しく追加して処理を終わる
           if (exists === undefined) {
             element.style.transform = "";
             const position = getElementPosition(element);
@@ -185,7 +180,7 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
         onMouseDown: (event: React.MouseEvent<HTMLElement>) => {
           const dragItem = dndItems.find((item) => key === item.key);
           if (dragItem === undefined) throw new Error("drag item not found");
-          onStartDrag([dragItem, event]);
+          resolveMouseDown([dragItem, event]);
         },
       },
     };
@@ -196,7 +191,6 @@ const onSorted =
   <T>(dragInfo: DragInfo, setMouseDownPos: (p: Position) => void) =>
   (item: DnDItem<T>) => {
     const { key, element } = item;
-    console.log("onSorted", item.value);
 
     // 位置をリセットする
     element.style.transform = "";
