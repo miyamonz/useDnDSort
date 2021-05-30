@@ -16,7 +16,6 @@ interface DnDItem<T> {
   hitArea: DOMRect;
 }
 interface DragInfo {
-  key: string;
   position: Position;
   mousePos: Position;
 }
@@ -31,20 +30,18 @@ interface DnDSortResult<T> {
   };
 }
 
-const onDrag =
-  (startPos: Position) =>
-  ({ clientX, clientY }: MouseEvent) => {
-    // マウスポインターの移動量を計算
-    const x = clientX - startPos.x;
-    const y = clientY - startPos.y;
+const onDrag = (startPos: Position) => (dragPos: Position) => {
+  // マウスポインターの移動量を計算
+  const x = dragPos.x - startPos.x;
+  const y = dragPos.y - startPos.y;
 
-    // ドラッグ要素の座標とスタイルを更新
-    return {
-      zIndex: "100",
-      cursor: "grabbing",
-      transform: `translate(${x}px,${y}px)`,
-    };
+  // ドラッグ要素の座標とスタイルを更新
+  return {
+    zIndex: "100",
+    cursor: "grabbing",
+    transform: `translate(${x}px,${y}px)`,
   };
+};
 
 /**
  * @description ドラッグ＆ドロップの並び替え処理を提供します
@@ -93,11 +90,11 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
 
       // ドラッグ中の処理
       const onMouseMove = (event: MouseEvent) => {
-        // assign drag item style
-        const dragStyle = onDrag(downPos)(event);
-        Object.assign(dragItem.element.style, dragStyle);
-
         const mousePos = { x: event.clientX, y: event.clientY };
+
+        // assign drag item style
+        const dragStyle = onDrag(downPos)(mousePos);
+        Object.assign(dragItem.element.style, dragStyle);
 
         // 入れ替え判定
         // ホバーされている要素の配列の位置を取得
@@ -111,33 +108,52 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
           const dragIndex = dndItems.findIndex(
             ({ key }) => key === dragItem.key
           );
+          //swap
           dndItems.splice(dragIndex, 1);
           dndItems.splice(hoveredIndex, 0, dragItem);
 
           const dragInfo = {
-            key: dragItem.key,
             position: getElementPosition(dragItem.element),
             mousePos,
           };
           // get previous position
-          dndItems.forEach((item) => {
-            item.position = getElementPosition(item.element);
+          const prevPosList = dndItems.map((item) => {
+            return {
+              key: item.key,
+              position: getElementPosition(item.element),
+            };
           });
-          // 再描画する
+          // re-render
           setItems(dndItems.map((v) => v.value));
 
           // ここで再配置後の処理を行う
           const newItems = dndItems.map((item) => {
-            const result = onSorted(dragInfo, (p) => (downPos = p))(item);
+            const { element } = item;
+
+            // 位置をリセットする
+            element.style.transform = "";
+            element.style.transition = "";
+
+            // 要素の位置を取得
+            // これは位置をリセットしてからの取得なので並べ替え後の,最終位置の座標になる
+            const position = getElementPosition(element);
+            const hitArea = element.getBoundingClientRect();
+
+            if (dragItem.key === item.key) {
+              applyStyleForDragItem(
+                dragInfo,
+                (p) => (downPos = p)
+              )(item.element);
+            } else {
+              const prevPos = prevPosList.find((l) => l.key === item.key);
+              if (prevPos) {
+                applyAnimation(prevPos.position, position, item.element);
+              }
+            }
             return {
               ...item,
-
-              //ここは、最終的にdndItemはpositionさえ更新すればいいことを明示的にするためにこうしている
-              //新しいpositionがtransform切ったときに取得しないといけないので、一旦こんな形になっているが、mapで新しいitemを作りつつ、副作用が発生するところだけforEachしたい
-              // ここで全要素のpositionは、最新のelementのpositionにリセットされる
-              position: result.position,
-
-              hitArea: result.hitArea,
+              position,
+              hitArea,
             };
           });
 
@@ -187,52 +203,49 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
   });
 };
 
-const onSorted =
-  <T>(dragInfo: DragInfo, setMouseDownPos: (p: Position) => void) =>
-  (item: DnDItem<T>) => {
-    const { key, element } = item;
+const applyAnimation = (
+  prevPos: Position,
+  position: Position,
+  element: HTMLElement
+) => {
+  // ドラッグ要素の時は、ズレを修正する
+  // 前回の座標を計算
+  const x = prevPos.x - position.x;
+  const y = prevPos.y - position.y;
 
-    // 位置をリセットする
+  // 要素を前回の位置に留めておく
+  element.style.transform = `translate(${x}px,${y}px)`;
+
+  // 一フレーム後に要素をアニメーションさせながら元に位置に戻す
+  requestAnimationFrame(() => {
     element.style.transform = "";
-    element.style.transition = "";
+    element.style.transition = "all 200ms";
+  });
+};
 
+const applyStyleForDragItem =
+  (dragInfo: DragInfo, setMouseDownPos: (p: Position) => void) =>
+  (element: HTMLElement) => {
     // 要素の位置を取得
     // これは位置をリセットしてからの取得なので並べ替え後の,最終位置の座標になる
     const position = getElementPosition(element);
-    const hitArea = element.getBoundingClientRect();
 
-    // ドラッグ要素の時は、ズレを修正する
-    if (dragInfo?.key === key) {
-      // ドラッグ要素のズレを計算する
-      // ここわかりにくい
-      // dragInfoのpositionはonMouseMoveで更新してるから
-      // positionは現在のelement位置からのpositionで、これはソート済みの位置を意味する
-      // 結果として、dragX, dragYは、新しい並び替え位置からのマウスズレ差分を意味する
-      const dragX = dragInfo.position.x - position.x;
-      const dragY = dragInfo.position.y - position.y;
+    const prevPos = dragInfo.position;
 
-      // 入れ替え時のズレを無くす
-      element.style.transform = `translate(${dragX}px,${dragY}px)`;
+    // ドラッグ要素のズレを計算する
+    // ここわかりにくい
+    // dragInfoのpositionはonMouseMoveで更新してるから
+    // positionは現在のelement位置からのpositionで、これはソート済みの位置を意味する
+    // 結果として、dragX, dragYは、新しい並び替え位置からのマウスズレ差分を意味する
+    const dragX = prevPos.x - position.x;
+    const dragY = prevPos.y - position.y;
 
-      // マウスポインターの位置も再計算してズレを無くす
-      setMouseDownPos({
-        x: dragInfo.mousePos.x - dragX,
-        y: dragInfo.mousePos.y - dragY,
-      });
-    } else {
-      // 前回の座標を計算
-      const x = item.position.x - position.x;
-      const y = item.position.y - position.y;
+    // 入れ替え時のズレを無くす
+    element.style.transform = `translate(${dragX}px,${dragY}px)`;
 
-      // 要素を前回の位置に留めておく
-      element.style.transform = `translate(${x}px,${y}px)`;
-
-      // 一フレーム後に要素をアニメーションさせながら元に位置に戻す
-      requestAnimationFrame(() => {
-        element.style.transform = "";
-        element.style.transition = "all 200ms";
-      });
-    }
-
-    return { position, hitArea };
+    // マウスポインターの位置も再計算してズレを無くす
+    setMouseDownPos({
+      x: dragInfo.mousePos.x - dragX,
+      y: dragInfo.mousePos.y - dragY,
+    });
   };
