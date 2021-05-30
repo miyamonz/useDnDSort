@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useMemo } from "react";
-import { isHover } from "./func";
+import { isHover, getElementPosition } from "./func";
 import { usePromise } from "./hooks";
 
 interface Position {
@@ -13,22 +13,18 @@ interface DnDItem<T> {
   key: string;
   position: Position;
   element: HTMLElement;
+  hitArea: DOMRect;
 }
-interface DragingItem {
+interface DragInfo {
   key: string;
   position: Position;
-}
-
-// useRef()で保持するデータの型
-interface DnDRef {
-  canCheckHovered: boolean; // 重なり判定ができるかのフラグ
+  mousePos: Position;
 }
 
 function usePointerPosition() {
   const position = useRef<Position>({ x: 0, y: 0 }).current;
 
-  const setPosition = (pos: Position | ((prev: Position) => Position)) => {
-    const p = typeof pos === "function" ? pos(position) : pos;
+  const setPosition = (p: Position) => {
     position.x = p.x;
     position.y = p.y;
   };
@@ -46,10 +42,20 @@ interface DnDSortResult<T> {
   };
 }
 
-const getElementPosition = (element: HTMLElement): Position => {
-  const { left, top } = element.getBoundingClientRect();
-  return { x: left, y: top };
-};
+const onDrag =
+  (startPos: Position) =>
+  ({ clientX, clientY }: MouseEvent) => {
+    // マウスポインターの移動量を計算
+    const x = clientX - startPos.x;
+    const y = clientY - startPos.y;
+
+    // ドラッグ要素の座標とスタイルを更新
+    return {
+      zIndex: "100",
+      cursor: "grabbing",
+      transform: `translate(${x}px,${y}px)`,
+    };
+  };
 
 /**
  * @description ドラッグ＆ドロップの並び替え処理を提供します
@@ -65,11 +71,6 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
     return keyMap;
   }, []);
 
-  // 状態をrefで管理する
-  const state = useRef<DnDRef>({
-    canCheckHovered: true,
-  }).current;
-
   // これはonMouseMoveの際に使われてて、入れ替え時にだけなんかいじるので、pointerPositionという名前は正しくない
   // 掴んだときの初期位置だ
   // ドラッグ中の要素のtransformを得るために使っている
@@ -81,14 +82,11 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
 
   const run = async () => {
     while (true) {
-      const [dragItem, event] = await getStartDragPromise();
+      const [dragItem, { clientX, clientY }] = await getStartDragPromise();
       console.log("onmousedown");
 
       // マウスポインターの座標を保持しておく
-      setPointerPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
+      setPointerPosition({ x: clientX, y: clientY });
 
       // ドラッグしている要素のスタイルを上書き
       dragItem.element.style.transition = ""; // アニメーションを無効にする
@@ -96,51 +94,60 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
 
       // ドラッグ中の処理
       const onMouseMove = (event: MouseEvent) => {
-        const { clientX, clientY } = event;
+        // assign drag item style
+        const dragStyle = onDrag(pointerPosition)(event);
+        Object.assign(dragItem.element.style, dragStyle);
 
-        // マウスポインターの移動量を計算
-        const x = clientX - pointerPosition.x;
-        const y = clientY - pointerPosition.y;
+        const mousePos = { x: event.clientX, y: event.clientY };
 
-        // ドラッグ要素の座標とスタイルを更新
-        const dragStyle = dragItem.element.style;
-        dragStyle.zIndex = "100";
-        dragStyle.cursor = "grabbing";
-        dragStyle.transform = `translate(${x}px,${y}px)`;
-
-        // まだ確認できない場合は処理を終了する
-        if (!state.canCheckHovered) return;
-        state.canCheckHovered = false;
-        setTimeout(() => (state.canCheckHovered = true), 300);
-
+        // 入れ替え判定
         // ドラッグしている要素の配列の位置を取得
         const dragIndex = dndItems.findIndex(({ key }) => key === dragItem.key);
 
         // ホバーされている要素の配列の位置を取得
         const hoveredIndex = dndItems.findIndex(
-          ({ element }, index) => index !== dragIndex && isHover(event, element)
+          ({ hitArea, key }, index) =>
+            key !== dragItem.key && isHover(mousePos, hitArea)
         );
 
         // ホバーされている要素があれば、ドラッグしている要素と入れ替える
-        if (hoveredIndex !== -1) {
-          // カーソルの位置を更新
-          setPointerPosition({ x: clientX, y: clientY });
-
+        if (hoveredIndex >= 0) {
           // 要素を入れ替える
           dndItems.splice(dragIndex, 1);
           dndItems.splice(hoveredIndex, 0, dragItem);
 
-          // ドラッグ要素の座標を更新
-          dragItem.position = getElementPosition(dragItem.element);
+          const dragInfo = {
+            key: dragItem.key,
+            position: getElementPosition(dragItem.element),
+            mousePos,
+          };
 
+          // get previous position
+          dndItems.forEach((item) => {
+            item.position = getElementPosition(item.element);
+          });
           // 再描画する
           console.log("setItems");
           setItems(dndItems.map((v) => v.value));
           console.log("after setItems");
+
           // ここで再配置後の処理を行う
-          dndItems.forEach((item) => {
-            onSorted(dragItem)(item);
+          const newItems = dndItems.map((item) => {
+            const result = onSorted(dragInfo)(item);
+            return {
+              ...item,
+
+              //ここは、最終的にdndItemはpositionさえ更新すればいいことを明示的にするためにこうしている
+              //新しいpositionがtransform切ったときに取得しないといけないので、一旦こんな形になっているが、mapで新しいitemを作りつつ、副作用が発生するところだけforEachしたい
+              // ここで全要素のpositionは、最新のelementのpositionにリセットされる
+              position: result.position,
+
+              hitArea: result.hitArea,
+            };
           });
+
+          dndItems.length = 0;
+          Array.prototype.push.apply(dndItems, newItems);
         }
       };
 
@@ -169,56 +176,53 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
   const dndItems = useRef<DnDItem<T>[]>([]).current;
 
   // depends dndItems, setPointerPosition
-  const onSorted = (dragItem: DragingItem) => (item: DnDItem<T>) => {
-    const { key, value, element } = item;
-    console.log("onSorted", key);
+  const onSorted = (dragInfo: DragInfo) => (item: DnDItem<T>) => {
+    const { key, element } = item;
+    console.log("onSorted", item.value);
 
     // 位置をリセットする
     element.style.transform = "";
+    element.style.transition = "";
 
     // 要素の位置を取得
-    // これは並べ替え後の座標になる
+    // これは位置をリセットしてからの取得なので並べ替え後の,最終位置の座標になる
     const position = getElementPosition(element);
-
-    const itemIndex = dndItems.findIndex((item) => item.key === key);
-    // assert( itemIndex >= 0 )
+    const hitArea = element.getBoundingClientRect();
 
     // ドラッグ要素の時は、ズレを修正する
-    if (dragItem?.key === key) {
+    if (dragInfo?.key === key) {
       // ドラッグ要素のズレを計算する
       // ここわかりにくい
-      // dragItemのpositionはonMouseMoveで更新してるから
+      // dragInfoのpositionはonMouseMoveで更新してるから
       // positionは現在のelement位置からのpositionで、これはソート済みの位置を意味する
       // 結果として、dragX, dragYは、新しい並び替え位置からのマウスズレ差分を意味する
-      const dragX = dragItem.position.x - position.x;
-      const dragY = dragItem.position.y - position.y;
+      const dragX = dragInfo.position.x - position.x;
+      const dragY = dragInfo.position.y - position.y;
 
       // 入れ替え時のズレを無くす
       element.style.transform = `translate(${dragX}px,${dragY}px)`;
 
       // マウスポインターの位置も再計算してズレを無くす
-      setPointerPosition((prev: Position) => ({
-        x: prev.x - dragX,
-        y: prev.y - dragY,
-      }));
+      setPointerPosition({
+        x: dragInfo.mousePos.x - dragX,
+        y: dragInfo.mousePos.y - dragY,
+      });
     } else {
       // 前回の座標を計算
       const x = item.position.x - position.x;
       const y = item.position.y - position.y;
 
       // 要素を前回の位置に留めておく
-      element.style.transition = "";
       element.style.transform = `translate(${x}px,${y}px)`;
 
       // 一フレーム後に要素をアニメーションさせながら元に位置に戻す
       requestAnimationFrame(() => {
         element.style.transform = "";
-        element.style.transition = "all 300ms";
+        element.style.transition = "all 200ms";
       });
     }
 
-    // 要素を更新する
-    dndItems[itemIndex] = { key, value, element, position };
+    return { position, hitArea };
   };
 
   return items.map((value: T): DnDSortResult<T> => {
@@ -236,7 +240,8 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
           if (exists === undefined) {
             element.style.transform = "";
             const position = getElementPosition(element);
-            return dndItems.push({ key, value, element, position });
+            const hitArea = element.getBoundingClientRect();
+            return dndItems.push({ key, value, element, position, hitArea });
           }
         },
 
