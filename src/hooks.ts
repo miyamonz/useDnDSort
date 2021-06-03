@@ -18,8 +18,19 @@ function makePromise<T>(
   });
 }
 
-export function usePromise<T>() {
+export function usePromiseResolve<T>() {
   const [resolve, setResolve] = useRefFn<(arg: T) => void>();
   const getPromise = () => makePromise(setResolve);
-  return [resolve, getPromise] as const;
+  return [getPromise, resolve] as const;
+}
+
+export function useRefArr<T>() {
+  const ref = useRef<T[]>([]);
+  return [
+    ref.current as readonly T[],
+    (newArr: T[]) => {
+      ref.current.length = 0;
+      Array.prototype.push.apply(ref.current, newArr);
+    },
+  ] as const;
 }

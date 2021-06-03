@@ -1,6 +1,6 @@
-import React, { useRef, useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { isHover, getElementPosition } from "./func";
-import { usePromise } from "./hooks";
+import { useRefArr, usePromiseResolve } from "./hooks";
 
 interface Position {
   x: number;
@@ -30,17 +30,6 @@ interface DnDSortResult<T> {
   };
 }
 
-function useRefArr<T>() {
-  const ref = useRef<DnDItem<T>[]>([]);
-  return [
-    ref.current as readonly DnDItem<T>[],
-    (newArr: DnDItem<T>[]) => {
-      ref.current.length = 0;
-      Array.prototype.push.apply(ref.current, newArr);
-    },
-  ] as const;
-}
-
 export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
   // 描画内容と紐づいているのでuseStateで管理する
   const [items, setItems] = useState(defaultItems);
@@ -52,11 +41,11 @@ export const useDnDSort = <T>(defaultItems: T[]): DnDSortResult<T>[] => {
     return keyMap;
   }, []);
 
-  const [dndItems, setDnDItems] = useRefArr<T>();
+  const [dndItems, setDnDItems] = useRefArr<DnDItem<T>>();
 
-  const [resolveMouseDown, getMouseDownPromise] =
-    usePromise<MouseDownResolvedValue<T>>();
-  const [resolveMouseUp, getMouseUpPromise] = usePromise<void>();
+  const [getMouseDownPromise, resolveMouseDown] =
+    usePromiseResolve<MouseDownResolvedValue<T>>();
+  const [getMouseUpPromise, resolveMouseUp] = usePromiseResolve<void>();
 
   async function listenDragUntilMouseUp(onMouseMove: (e: MouseEvent) => void) {
     window.addEventListener("mouseup", resolveMouseUp);
